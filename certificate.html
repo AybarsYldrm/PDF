@@ -1,49 +1,175 @@
-<!-- template.html -->
 <!doctype html>
-<meta charset="utf-8">
-<style>
-  body{ margin:0; font-family: sans-serif; }
-  .abs{ position:absolute; }
-</style>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="pdf:page" content="A5 landscape">
+  <style>
+    @font-face {
+      font-family: "Open Sans";
+      src: url("OpenSans-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
 
-<!-- Üst banner -->
-<div class="abs" data-pdf-rect style="left:0mm; top:0mm; width:297mm; height:20mm; background:#F6F8F9"></div>
+    * {
+      box-sizing: border-box;
+    }
 
-<!-- Dış çerçeve (rect) -->
-<div class="abs" data-pdf-rect style="left:10mm; top:10mm; width:277mm; height:190mm; border-width:1.5mm; border-color:#033248"></div>
+    body {
+      margin: 0;
+      padding: 10mm;
+      font-family: "Open Sans", Arial, sans-serif;
+      background: linear-gradient(135deg, #eff4fb 0%, #ffffff 70%);
+      color: #0c2f47;
+    }
 
-<!-- Başlık -->
-<div class="abs" data-pdf-text style="left:30mm; top:8mm; width:237mm; height:12mm; font-size:12mm; color:#033248">
-  Katılım Belgesi
-</div>
+    .certificate {
+      background: #ffffff;
+      border: 0.7mm solid #0c4a6e;
+      border-radius: 6mm;
+      padding: 12mm 16mm;
+      display: flex;
+      flex-direction: column;
+      gap: 8mm;
+      box-shadow: 0 4mm 14mm rgba(12,42,63,0.14);
+      min-height: 100mm;
+    }
 
-<!-- Alt başlık -->
-<div class="abs" data-pdf-text style="left:30mm; top:20mm; width:237mm; height:7mm; font-size:4mm; color:#3C3C3C">
-  Bu belge, aşağıdaki kişinin etkinliğe katılımını onaylar
-</div>
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12mm;
+    }
 
-<!-- İsim kutusu -->
-<div class="abs" data-pdf-rect style="left:30mm; top:45mm; width:237mm; height:20mm; border-width:0.5mm; border-color:#033248"></div>
+    .header img {
+      width: 28mm;
+      height: auto;
+    }
 
-<!-- İsim (otomatik sığdır) -->
-<div class="abs" data-pdf-textfit data-min="8" data-max="18" style="left:30mm; top:45mm; width:237mm; height:20mm; color:#000000">
-  SELAHATTİN AYBARS YILDIRIM
-</div>
+    .badge {
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 1.1mm;
+      font-size: 4mm;
+      color: #0c4a6e;
+      font-weight: 600;
+    }
 
-<!-- Açıklamalar -->
-<div class="abs" data-pdf-text style="left:30mm; top:70mm; width:237mm; height:7mm; font-size:4mm; color:#3C3C3C">
-  Bu sertifika, Deneme kapsamında gösterdiği başarılı katılım ve katkılarından dolayı verilmiştir.
-</div>
-<div class="abs" data-pdf-text style="left:30mm; top:78mm; width:237mm; height:7mm; font-size:4mm; color:#3C3C3C">
-  Katılımcının çabası ve özverisi bu belge ile takdir edilmektedir.
-</div>
+    .hero {
+      text-align: center;
+    }
 
-<!-- Logolar (PNG) -->
-<img class="abs" data-pdf-image src="861ec4b82166.png"  style="left:30mm; top:28mm; width:25mm; height:18mm">
-<img class="abs" data-pdf-image src="535b9b483526.png" style="left:242mm; top:28mm; width:25mm; height:18mm">
+    .hero .title {
+      margin: 0;
+      font-size: 12mm;
+      letter-spacing: 0.8mm;
+      text-transform: uppercase;
+      color: #0c2f47;
+    }
 
-<!-- Alt yazı -->
-<div class="abs" data-pdf-text style="left:30mm; top:180mm; width:120mm; height:6mm; font-size:4mm; color:#033248">FITFAK</div>
-<div class="abs" data-pdf-text style="left:30mm; top:186mm; width:200mm; height:6mm; font-size:3mm; color:#666666">
-  Bu belge dijital ortamda imzalanmıştır.
-</div>
+    .hero .subtitle {
+      margin: 1mm 0 0;
+      font-size: 3.9mm;
+      line-height: 1.6;
+      color: #516371;
+    }
+
+    .recipient {
+      margin: 0 auto;
+      width: 70%;
+      border: 0.6mm solid #0c4a6e;
+      border-radius: 3.6mm;
+      padding: 7mm 10mm;
+      background: #f3f8ff;
+      text-align: center;
+    }
+
+    .recipient span {
+      display: block;
+      font-size: 7.2mm;
+      letter-spacing: 0.7mm;
+      font-weight: 600;
+      color: #0c4a6e;
+      text-transform: uppercase;
+    }
+
+    .summary {
+      margin: 0 16mm;
+      font-size: 3.9mm;
+      line-height: 1.7;
+      color: #465a68;
+      text-align: center;
+    }
+
+    .signature-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 18mm;
+      margin-top: 4mm;
+    }
+
+    .signature {
+      flex: 1;
+      color: #465a68;
+    }
+
+    .signature .label {
+      text-transform: uppercase;
+      letter-spacing: 0.6mm;
+      font-size: 3.4mm;
+      color: #0c4a6e;
+    }
+
+    .signature .value {
+      margin-top: 2mm;
+      font-size: 3.6mm;
+    }
+
+    .signature--right {
+      text-align: right;
+    }
+
+    .footer-note {
+      margin: 6mm auto 0;
+      text-align: center;
+      font-size: 3mm;
+      color: #6a7c88;
+      letter-spacing: 0.2mm;
+    }
+  </style>
+</head>
+<body>
+  <div class="certificate">
+    <div class="header">
+      <img src="861ec4b82166.png" alt="Sol Logo">
+      <div class="badge">Katılım Belgesi</div>
+      <img src="535b9b483526.png" alt="Sağ Logo">
+    </div>
+
+    <div class="hero">
+      <h1 class="title">Başarı Sertifikası</h1>
+      <p class="subtitle">Aşağıda adı geçen kişinin programa olan özverili katılımı ve olağanüstü performansı onuruna bu belge düzenlenmiştir.</p>
+    </div>
+
+    <div class="recipient">
+      <span>Selahattin Aybars Yıldırım</span>
+    </div>
+
+    <p class="summary">Program boyunca sergilediği liderlik, takım çalışması ve yenilikçi katkılarından dolayı tebrik eder, gelecekteki başarılarının devamını dileriz.</p>
+
+    <div class="signature-row">
+      <div class="signature">
+        <div class="label">Yetkili İmza</div>
+        <div class="value">FITFAK Akademi Direktörü</div>
+      </div>
+      <div class="signature signature--right">
+        <div class="label">Tarih</div>
+        <div class="value">18 Nisan 2024</div>
+      </div>
+    </div>
+
+    <p class="footer-note">Bu belge dijital ortamda üretilmiştir ve doğrulama kodu ile teyit edilebilir.</p>
+  </div>
+</body>
+</html>

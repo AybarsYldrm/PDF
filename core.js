@@ -11,13 +11,6 @@ const rgb  = (r,g,b) => `${(clamp255(r)/255).toFixed(3)} ${(clamp255(g)/255).toF
 const esc  = t => String(t).replace(/([()\\])/g,'\\$1');
 const toPt = (v,u='pt') => u==='pt'?v : u==='mm'? v*(72/25.4) : u==='px'? v*(72/96) : v;
 
-function utf16Hex(s){
-  const b = Buffer.alloc(2 + s.length*2);
-  b.writeUInt16BE(0xFEFF,0);
-  let o=2; for(const ch of s){ b.writeUInt16BE(ch.codePointAt(0), o); o+=2; }
-  return '<'+b.toString('hex').toUpperCase()+'>';
-}
-
 /* ---------- PDF çekirdeği ---------- */
 class PDFDoc {
   constructor({ title='Untitled', author='Node', compress=true }={}){
@@ -31,6 +24,7 @@ class PDFDoc {
     this.catalogId = null;
     this.pagesTreeId = null;
     this.fonts = {};
+    this.fontMetrics = {};
     this.extGStates = {};
     this._gsCount = 1;
     // Base14 fallback (sadece ASCII)
@@ -112,10 +106,11 @@ class PDFDoc {
     this.cmd(p, a.join('\n'));
   }
 
-  drawTextU16(p,text,x,y,{size=12,color=null,fontTag='F1'}={}){
+  drawTextCID(p, glyphHex, x, y, { size=12, color=null, fontTag='F1' }={}){
     const a=['BT', `/${fontTag} ${fnum(size)} Tf`, `${fnum(x)} ${fnum(y)} Td`];
     if (color) a.push(`${rgb(...color)} rg`);
-    a.push(`${utf16Hex(text)} Tj`, 'ET');
+    const payload = glyphHex && glyphHex.length ? `<${glyphHex}>` : '()';
+    a.push(`${payload} Tj`, 'ET');
     this.cmd(p, a.join('\n'));
   }
 
@@ -229,19 +224,28 @@ ${xrefStart}
   registerTTF(tag, ttfPath){
     const ttf = fs.readFileSync(ttfPath);
     const parsed = TTF.parse(ttf);
-    const toUniId = this._addObject(TTF.makeToUnicodeCMap(tag));
+    const toUniId = this._addObject(TTF.makeToUnicodeCMap(tag, parsed.glyphToUnicode));
     const fontFile2Id = this._addObjectRaw(Buffer.concat([
       Buffer.from(`<< /Length ${ttf.length} /Length1 ${ttf.length} /Filter /FlateDecode >>\nstream\n`),
       zlib.deflateSync(ttf), Buffer.from('\nendstream')
     ]));
+    const scale = 1000 / parsed.unitsPerEm;
+    const ascent = parsed.ascent * scale;
+    const descent = parsed.descent * scale;
+    const capHeight = parsed.ascent * scale;
+    const bbox = parsed.bbox.map(v => v * scale);
+    const defaultWidth = parsed.hmtx[0] || parsed.unitsPerEm;
+    const scaledWidths = parsed.hmtx.map(w => Math.round(w * scale));
+    const widthArray = `0 [${scaledWidths.map(fnum).join(' ')}]`;
     const fdId = this._addObject(`<<
 /Type /FontDescriptor
 /FontName /${tag}
 /Flags 32
 /ItalicAngle 0
-/Ascent ${parsed.ascent}
-/Descent ${parsed.descent}
-/CapHeight ${parsed.ascent}
+/Ascent ${fnum(ascent)}
+/Descent ${fnum(descent)}
+/CapHeight ${fnum(capHeight)}
+/FontBBox [${bbox.map(v => fnum(v)).join(' ')}]
 /StemV 80
 /FontFile2 ${fontFile2Id} 0 R
 >>`);
@@ -250,6 +254,9 @@ ${xrefStart}
 /BaseFont /${tag}
 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>
 /FontDescriptor ${fdId} 0 R
+/DW ${fnum(defaultWidth * scale)}
+/W [ ${widthArray} ]
+/CIDToGIDMap /Identity
 >>`);
     const type0Id = this._addObject(`<<
 /Type /Font /Subtype /Type0
@@ -260,7 +267,9 @@ ${xrefStart}
 >>`);
     const fontTag = this._allocFontTag();
     this.fonts[fontTag] = type0Id;
-    return { fontTag, metrics: parsed };
+    const metrics = TTF.createMetrics(parsed);
+    this.fontMetrics[fontTag] = metrics;
+    return { fontTag, metrics };
   }
 }
 
@@ -339,43 +348,85 @@ class TTF {
     const tab = TTF._dir(buf);
     const head = TTF._head(buf, tab.head);
     const hhea = TTF._hhea(buf, tab.hhea);
+    const maxp = tab.maxp ? TTF._maxp(buf, tab.maxp) : { numGlyphs: TTF._fallbackGlyphCount(buf, tab, hhea) };
     const cmap = TTF._cmap4(buf, tab.cmap);
-    const hmtx = TTF._hmtx(buf, tab.hmtx, hhea);
+    const hmtx = TTF._hmtx(buf, tab.hmtx, hhea, maxp);
+    const glyphToUnicode = {};
+    for (const [key, gid] of Object.entries(cmap)){
+      if (!Number.isFinite(gid)) continue;
+      if (glyphToUnicode[gid] !== undefined) continue;
+      glyphToUnicode[gid] = Number(key);
+    }
+    if (glyphToUnicode[0] === undefined) glyphToUnicode[0] = 0;
+    const fallbackGlyphId = cmap[63] ?? cmap[32] ?? 0;
     return {
       unitsPerEm: head.unitsPerEm,
       ascent: hhea.ascent,
       descent: hhea.descent,
-      cmap, hmtx,
+      bbox: [head.xMin, head.yMin, head.xMax, head.yMax],
+      cmap, hmtx, glyphToUnicode, fallbackGlyphId,
       textWidth: (text, size)=>{
         let aw=0;
-        for(const ch of text){ const gid=cmap[ch.codePointAt(0)]||0; aw += (hmtx[gid] ?? hmtx[hmtx.length-1] ?? 0); }
+        for(const ch of text){
+          const cp=ch.codePointAt(0);
+          const gid=cmap[cp] ?? fallbackGlyphId;
+          aw += (hmtx[gid] ?? hmtx[hmtx.length-1] ?? hmtx[0] ?? 0);
+        }
         return aw * (size / head.unitsPerEm);
+      },
+      encodeText: (text)=>{
+        const bytes = [];
+        for (const ch of text){
+          const cp = ch.codePointAt(0);
+          const gid = cmap[cp] ?? fallbackGlyphId;
+          bytes.push((gid >> 8) & 0xFF, gid & 0xFF);
+        }
+        return Buffer.from(bytes).toString('hex').toUpperCase();
       }
     };
   }
-  static makeToUnicodeCMap(name){
-    return `<< /Length 300 >>\nstream
-/CIDInit /ProcSet findresource begin
-12 dict begin
-begincmap
-/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def
-/CMapName /${name} def
-/CMapType 2 def
-1 begincodespacerange
-<0000> <FFFF>
-endcodespacerange
-1 beginbfrange
-<0000> <FFFF> <0000>
-endbfrange
-endcmap
-CMapName currentdict /CMap defineresource pop
-end
-end
-endstream`;
+  static makeToUnicodeCMap(name, glyphMap={}){
+    const entries = Object.entries(glyphMap)
+      .map(([gid, cp]) => [Number(gid), Number(cp)])
+      .filter(([gid, cp]) => Number.isFinite(gid) && Number.isFinite(cp))
+      .sort((a,b)=>a[0]-b[0]);
+    const lines = [
+      '/CIDInit /ProcSet findresource begin',
+      '12 dict begin',
+      'begincmap',
+      '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def',
+      `/CMapName /${name} def`,
+      '/CMapType 2 def',
+      '1 begincodespacerange',
+      '<0000> <FFFF>',
+      'endcodespacerange'
+    ];
+    for (let i=0;i<entries.length;i+=100){
+      const slice = entries.slice(i, i+100);
+      lines.push(`${slice.length} beginbfchar`);
+      for (const [gid, cp] of slice){
+        const gidHex = gid.toString(16).toUpperCase().padStart(4,'0');
+        const uniHex = TTF._unicodeHex(cp);
+        lines.push(`<${gidHex}> <${uniHex}>`);
+      }
+      lines.push('endbfchar');
+    }
+    lines.push('endcmap', 'CMapName currentdict /CMap defineresource pop', 'end', 'end');
+    const body = lines.join('\n');
+    return `<< /Length ${body.length} >>\nstream\n${body}\nendstream`;
   }
-  static _dir(buf){ const n=buf.readUInt16BE(4); const out={}; let p=12; for(let i=0;i<n;i++){ const tag=buf.toString('ascii',p,p+4); p+=4; p+=4; const off=buf.readUInt32BE(p); p+=4; const len=buf.readUInt32BE(p); p+=4; out[tag]={offset:off,length:len}; } return out; }
-  static _head(buf,t){ const p=t.offset; return { unitsPerEm: buf.readUInt16BE(p+18), indexToLocFormat: buf.readInt16BE(p+50) }; }
+  static _dir(buf){ const n=buf.readUInt16BE(4); const out={}; let p=12; for(let i=0;i<n;i++){ const tag=buf.toString('ascii',p, p+4); p+=4; p+=4; const off=buf.readUInt32BE(p); p+=4; const len=buf.readUInt32BE(p); p+=4; out[tag]={offset:off,length:len}; }
+return out; }
+  static _head(buf,t){ const p=t.offset; return {
+    unitsPerEm: buf.readUInt16BE(p+18),
+    indexToLocFormat: buf.readInt16BE(p+50),
+    xMin: buf.readInt16BE(p+36),
+    yMin: buf.readInt16BE(p+38),
+    xMax: buf.readInt16BE(p+40),
+    yMax: buf.readInt16BE(p+42)
+  }; }
   static _hhea(buf,t){ const p=t.offset; return { ascent:buf.readInt16BE(p+4), descent:buf.readInt16BE(p+6), numberOfHMetrics:buf.readUInt16BE(p+34), offset:p }; }
+  static _maxp(buf,t){ const p=t.offset; return { numGlyphs: buf.readUInt16BE(p+4) }; }
   static _cmap4(buf,t){
     let p=t.offset; p+=2; const num=buf.readUInt16BE(p); p+=2; let sub=null;
     for(let i=0;i<num;i++){ const plat=buf.readUInt16BE(p); p+=2; const enc=buf.readUInt16BE(p); p+=2; const off=buf.readUInt32BE(p); p+=4; if(plat===3 && (enc===1||enc===10)) sub=t.offset+off; }
@@ -404,19 +455,59 @@ endstream`;
     }
     return map;
   }
-  static _hmtx(buf,t,hhea){
+  static _hmtx(buf,t,hhea,maxp){
     const p=t.offset; const n=hhea.numberOfHMetrics; const aw=[]; let q=p;
-    for(let i=0;i<n;i++){ aw.push(buf.readUInt16BE(q)); q+=4; }
+    let last=0;
+    for(let i=0;i<n;i++){ last=buf.readUInt16BE(q); aw.push(last); q+=2; q+=2; }
+    const remaining = Math.max(0, (maxp?.numGlyphs||aw.length) - n);
+    for(let i=0;i<remaining;i++){ q+=2; }
+    for(let i=0;i<remaining;i++){ aw.push(last); }
     return aw;
   }
+  static _fallbackGlyphCount(buf, tab, hhea){
+    if (tab?.maxp) return TTF._maxp(buf, tab.maxp).numGlyphs;
+    return hhea.numberOfHMetrics;
+  }
+  static _unicodeHex(cp){
+    if (cp <= 0xFFFF) return cp.toString(16).toUpperCase().padStart(4,'0');
+    let v = cp - 0x10000;
+    const high = 0xD800 + (v >> 10);
+    const low = 0xDC00 + (v & 0x3FF);
+    return high.toString(16).toUpperCase().padStart(4,'0') + low.toString(16).toUpperCase().padStart(4,'0');
+  }
+  static createMetrics(parsed){
+    const { cmap, hmtx, unitsPerEm, fallbackGlyphId } = parsed;
+    return {
+      unitsPerEm,
+      textWidth: (text, size)=>{
+        let aw=0;
+        for (const ch of text){
+          const cp = ch.codePointAt(0);
+          const gid = cmap[cp] ?? fallbackGlyphId;
+          const adv = hmtx[gid] ?? hmtx[hmtx.length-1] ?? hmtx[0] ?? unitsPerEm;
+          aw += adv;
+        }
+        return aw * (size / unitsPerEm);
+      },
+      encodeText: (text)=>{
+        const bytes=[];
+        for (const ch of text){
+          const cp = ch.codePointAt(0);
+          const gid = cmap[cp] ?? fallbackGlyphId;
+          bytes.push((gid>>8)&0xFF, gid & 0xFF);
+        }
+        return Buffer.from(bytes).toString('hex').toUpperCase();
+      }
+    };
+  }
 }
-
 /* ---------- Canvas & Renderer ---------- */
 class Canvas {
   constructor(pdf, pageIndex){ this.pdf=pdf; this.p=pageIndex; const pg=pdf.pages[pageIndex]; this.W=pg.width; this.H=pg.height; this.state={font:'F1', metrics:null}; }
   setFont(fontTag, metrics){ this.state.font=fontTag; this.state.metrics=metrics; }
   text({t,x,y,sz=12,c=null,font,alpha=1}){
     const tag = font||this.state.font;
+    const metrics = this.pdf.fontMetrics?.[tag] || this.state.metrics;
     const useAlpha = alpha !== undefined && alpha < 1;
     let gs=null;
     if (useAlpha){
@@ -424,13 +515,18 @@ class Canvas {
       this.pdf.cmd(this.p,'q');
       this.pdf.cmd(this.p,`/${gs.name} gs`);
     }
-    if (tag==='F1') this.pdf.drawTextSimple(this.p, t, x, y, {size:sz, color:c, fontTag:tag});
-    else            this.pdf.drawTextU16  (this.p, t, x, y, {size:sz, color:c, fontTag:tag});
+    if (tag==='F1' || !metrics || !metrics.encodeText){
+      this.pdf.drawTextSimple(this.p, t, x, y, {size:sz, color:c, fontTag:tag});
+    } else {
+      const glyphHex = metrics.encodeText(t);
+      this.pdf.drawTextCID(this.p, glyphHex, x, y, {size:sz, color:c, fontTag:tag});
+    }
     if (useAlpha) this.pdf.cmd(this.p,'Q');
   }
   textFit({t,x,y,w,h,min=8,max=72,c=null,font,alpha=1}){
-    const tag=font||this.state.font, m=this.state.metrics;
-    if (!m){ let sz=max, tw=t.length*sz*0.5; while(tw>w && sz>min){ sz-=0.5; tw=t.length*sz*0.5; } this.text({t,x:x+(w-tw)/2,y:y+(h-sz)/2,sz,c,font:tag,alpha}); return sz; }
+    const tag=font||this.state.font;
+    const m=this.pdf.fontMetrics?.[tag] || this.state.metrics;
+    if (!m || !m.textWidth){ let sz=max, tw=t.length*sz*0.5; while(tw>w && sz>min){ sz-=0.5; tw=t.length*sz*0.5; } this.text({t,x:x+(w-tw)/2,y:y+(h-sz)/2,sz,c,font:tag,alpha}); return sz; }
     let lo=min, hi=max, best=min;
     while(hi-lo>0.5){ const mid=(hi+lo)/2, tw=m.textWidth(t, mid); if (tw<=w){ best=mid; lo=mid; } else hi=mid; }
     const tw=m.textWidth(t,best); const base=y+(h-best)/2;

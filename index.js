@@ -1,5 +1,6 @@
 // make_pdf_from_html.js
 const fs = require('fs');
+const path = require('path');
 const { htmlToSpec } = require('./html2spec');
 // Aşağıdaki 3 sınıf senin çekirdeğinden geliyor:
 // PDFDoc, Canvas, Renderer — fitfak_pdf_core.js içinden import et:
@@ -43,10 +44,15 @@ function buildPdfFromHtml({ htmlPath, outPdf, ttfPath }){
 }
 
 // CLI demo:
-// node make_pdf_from_html.js template.html out.pdf ./NotoSans-Regular.ttf
+// node index.js [htmlPath] [outPdf] [fontPath]
 if (require.main === module){
-  const [,, htmlPath='template.html', outPdf='out.pdf', ttfPath='./NotoSans.ttf'] = process.argv;
-  buildPdfFromHtml({ htmlPath, outPdf, ttfPath });
+  const defaultHtml = path.join(__dirname, 'certificate.html');
+  const defaultOut = path.join(process.cwd(), 'out.pdf');
+  const defaultFont = path.join(__dirname, 'OpenSans-Regular.ttf');
+  const htmlArg = process.argv[2] ? path.resolve(process.cwd(), process.argv[2]) : defaultHtml;
+  const outArg = process.argv[3] ? path.resolve(process.cwd(), process.argv[3]) : defaultOut;
+  const fontArg = process.argv[4] ? path.resolve(process.cwd(), process.argv[4]) : defaultFont;
+  buildPdfFromHtml({ htmlPath: htmlArg, outPdf: outArg, ttfPath: fontArg });
 }
 
 module.exports = { buildPdfFromHtml };

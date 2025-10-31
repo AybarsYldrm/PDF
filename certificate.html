@@ -1,49 +1,171 @@
-<!-- template.html -->
 <!doctype html>
-<meta charset="utf-8">
-<style>
-  body{ margin:0; font-family: sans-serif; }
-  .abs{ position:absolute; }
-</style>
+<html lang="tr">
+<head>
+  <meta charset="utf-8">
+  <meta name="pdf:page" content="A4 landscape">
+  <style>
+    @font-face {
+      font-family: "Open Sans";
+      src: url("OpenSans-Regular.ttf") format("truetype");
+      font-weight: 400;
+      font-style: normal;
+    }
 
-<!-- Üst banner -->
-<div class="abs" data-pdf-rect style="left:0mm; top:0mm; width:297mm; height:20mm; background:#F6F8F9"></div>
+    * {
+      box-sizing: border-box;
+    }
 
-<!-- Dış çerçeve (rect) -->
-<div class="abs" data-pdf-rect style="left:10mm; top:10mm; width:277mm; height:190mm; border-width:1.5mm; border-color:#033248"></div>
+    body {
+      margin: 0;
+      font-family: "Open Sans", Arial, sans-serif;
+      background: linear-gradient(130deg, #f0f6fb 0%, #ffffff 65%);
+      color: #012941;
+      padding: 18mm 24mm;
+    }
 
-<!-- Başlık -->
-<div class="abs" data-pdf-text style="left:30mm; top:8mm; width:237mm; height:12mm; font-size:12mm; color:#033248">
-  Katılım Belgesi
-</div>
+    .page {
+      background: #ffffff;
+      border-radius: 6mm;
+      border: 0.6mm solid #0a3a54;
+      padding: 18mm 20mm;
+      box-shadow: 0 6mm 18mm rgba(12, 42, 63, 0.18);
+      min-height: 100mm;
+    }
 
-<!-- Alt başlık -->
-<div class="abs" data-pdf-text style="left:30mm; top:20mm; width:237mm; height:7mm; font-size:4mm; color:#3C3C3C">
-  Bu belge, aşağıdaki kişinin etkinliğe katılımını onaylar
-</div>
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16mm;
+    }
 
-<!-- İsim kutusu -->
-<div class="abs" data-pdf-rect style="left:30mm; top:45mm; width:237mm; height:20mm; border-width:0.5mm; border-color:#033248"></div>
+    .header img {
+      width: 28mm;
+      height: auto;
+    }
 
-<!-- İsim (otomatik sığdır) -->
-<div class="abs" data-pdf-textfit data-min="8" data-max="18" style="left:30mm; top:45mm; width:237mm; height:20mm; color:#000000">
-  SELAHATTİN AYBARS YILDIRIM
-</div>
+    .badge {
+      flex: 1;
+      text-align: center;
+      text-transform: uppercase;
+      letter-spacing: 1.2mm;
+      font-size: 4.4mm;
+      color: #035f8f;
+    }
 
-<!-- Açıklamalar -->
-<div class="abs" data-pdf-text style="left:30mm; top:70mm; width:237mm; height:7mm; font-size:4mm; color:#3C3C3C">
-  Bu sertifika, Deneme kapsamında gösterdiği başarılı katılım ve katkılarından dolayı verilmiştir.
-</div>
-<div class="abs" data-pdf-text style="left:30mm; top:78mm; width:237mm; height:7mm; font-size:4mm; color:#3C3C3C">
-  Katılımcının çabası ve özverisi bu belge ile takdir edilmektedir.
-</div>
+    .hero {
+      text-align: center;
+      margin-bottom: 10mm;
+    }
 
-<!-- Logolar (PNG) -->
-<img class="abs" data-pdf-image src="861ec4b82166.png"  style="left:30mm; top:28mm; width:25mm; height:18mm">
-<img class="abs" data-pdf-image src="535b9b483526.png" style="left:242mm; top:28mm; width:25mm; height:18mm">
+    .hero h1 {
+      margin: 0 0 4mm;
+      font-size: 14mm;
+      text-transform: uppercase;
+      letter-spacing: 1mm;
+      color: #012941;
+    }
 
-<!-- Alt yazı -->
-<div class="abs" data-pdf-text style="left:30mm; top:180mm; width:120mm; height:6mm; font-size:4mm; color:#033248">FITFAK</div>
-<div class="abs" data-pdf-text style="left:30mm; top:186mm; width:200mm; height:6mm; font-size:3mm; color:#666666">
-  Bu belge dijital ortamda imzalanmıştır.
-</div>
+    .hero p {
+      margin: 0;
+      font-size: 4mm;
+      line-height: 1.6;
+      color: #4c5b63;
+    }
+
+    .recipient {
+      margin: 0 auto;
+      padding: 8mm 12mm;
+      border: 0.5mm solid #012941;
+      border-radius: 3mm;
+      background: #f5fbff;
+      width: 70%;
+      text-align: center;
+    }
+
+    .recipient span {
+      font-size: 8mm;
+      font-weight: 600;
+      letter-spacing: 0.8mm;
+      color: #012941;
+      text-transform: uppercase;
+    }
+
+    .summary {
+      font-size: 4mm;
+      line-height: 1.6;
+      color: #42535c;
+      text-align: center;
+      margin: 0 15mm;
+    }
+
+    .signature-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 18mm;
+      margin-top: 6mm;
+    }
+
+    .signature {
+      flex: 1;
+    }
+
+    .signature .label {
+      text-transform: uppercase;
+      font-size: 3.6mm;
+      letter-spacing: 0.8mm;
+      color: #0e3b52;
+    }
+
+    .signature .value {
+      font-size: 3.6mm;
+      color: #42535c;
+    }
+
+    .signature--right {
+      text-align: right;
+    }
+
+    .footer-note {
+      text-align: center;
+      font-size: 3mm;
+      color: #556b77;
+      margin-top: 12mm;
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="header">
+      <img src="861ec4b82166.png" alt="Sol Logo">
+      <div class="badge">Katılım Belgesi</div>
+      <img src="535b9b483526.png" alt="Sağ Logo">
+    </div>
+
+    <div class="hero">
+      <h1>Başarı Sertifikası</h1>
+      <p>Aşağıda adı geçen kişinin programa olan özverili katılımı ve olağanüstü performansı onuruna bu belge düzenlenmiştir.</p>
+    </div>
+
+    <div class="recipient">
+      <span>SELAHATTİN AYBARS YILDIRIM</span>
+    </div>
+
+    <p class="summary">Program boyunca sergilediği liderlik, takım çalışması ve yenilikçi katkılarından dolayı tebrik eder, gelecekteki başarılarının devamını dileriz.</p>
+
+    <div class="signature-row">
+      <div class="signature">
+        <div class="label">Yetkili İmza</div>
+        <div class="value">FITFAK Akademi Direktörü</div>
+      </div>
+      <div class="signature signature--right">
+        <div class="label">Tarih</div>
+        <div class="value">18 Nisan 2024</div>
+      </div>
+    </div>
+
+    <p class="footer-note">Bu belge dijital ortamda üretilmiştir ve doğrulama kodu ile teyit edilebilir.</p>
+  </div>
+</body>
+</html>

@@ -31,6 +31,8 @@ class PDFDoc {
     this.catalogId = null;
     this.pagesTreeId = null;
     this.fonts = {};
+    this.extGStates = {};
+    this._gsCount = 1;
     // Base14 fallback (sadece ASCII)
     this.fonts.F1 = this._addObject(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`);
   }
@@ -68,6 +70,39 @@ class PDFDoc {
     if (fillColor && strokeColor) this.fillStroke(p);
     else if (fillColor) this.fill(p);
     else if (strokeColor) this.stroke(p);
+  }
+
+  drawRoundedRect(p,x,y,w,h,{fillColor=null,strokeColor=null,strokeWidth=1,radius=0}={}){
+    const r = Math.max(0, Math.min(radius || 0, Math.min(w,h)/2));
+    if (r <= 0){ this.drawRect(p,x,y,w,h,{fillColor,strokeColor,strokeWidth}); return; }
+    const cmds = this._roundedRectPath(x,y,w,h,r);
+    this._paintPath(p, cmds, {fillColor, strokeColor, strokeWidth});
+  }
+
+  _paintPath(p, cmds, {fillColor=null, strokeColor=null, strokeWidth=1}={}){
+    if (fillColor) this.setFillColor(p, ...fillColor);
+    if (strokeColor){ this.setStrokeColor(p, ...strokeColor); this.setLineWidth(p, strokeWidth); }
+    this.cmd(p, cmds.join('\n'));
+    if (fillColor && strokeColor) this.fillStroke(p);
+    else if (fillColor) this.fill(p);
+    else if (strokeColor) this.stroke(p);
+  }
+
+  _roundedRectPath(x,y,w,h,r){
+    const k = 0.552284749831;
+    const c = r * k;
+    const cmds = [];
+    cmds.push(`${fnum(x+r)} ${fnum(y)} m`);
+    cmds.push(`${fnum(x+w-r)} ${fnum(y)} l`);
+    cmds.push(`${fnum(x+w-r+c)} ${fnum(y)} ${fnum(x+w)} ${fnum(y+c)} ${fnum(x+w)} ${fnum(y+r)} c`);
+    cmds.push(`${fnum(x+w)} ${fnum(y+h-r)} l`);
+    cmds.push(`${fnum(x+w)} ${fnum(y+h-r+c)} ${fnum(x+w-r+c)} ${fnum(y+h)} ${fnum(x+w-r)} ${fnum(y+h)} c`);
+    cmds.push(`${fnum(x+r)} ${fnum(y+h)} l`);
+    cmds.push(`${fnum(x+r-c)} ${fnum(y+h)} ${fnum(x)} ${fnum(y+h-r+c)} ${fnum(x)} ${fnum(y+h-r)} c`);
+    cmds.push(`${fnum(x)} ${fnum(y+r)} l`);
+    cmds.push(`${fnum(x)} ${fnum(y+r-c)} ${fnum(x+r-c)} ${fnum(y)} ${fnum(x+r)} ${fnum(y)} c`);
+    cmds.push('h');
+    return cmds;
   }
 
   drawTextSimple(p,text,x,y,{size=12,color=null,fontTag='F1'}={}){
@@ -142,10 +177,53 @@ ${xrefStart}
   }
 
   /* kaynak yardımcıları */
-  _resourcesDict(){ const f=Object.entries(this.fonts).map(([k,id])=>`/${k} ${id} 0 R`).join(' '); return `<< /Font << ${f} >> /XObject << >> >>`; }
+  _resourcesDict(){
+    const fontEntries = Object.entries(this.fonts).map(([k,id])=>`/${k} ${id} 0 R`).join(' ');
+    const gStateEntries = Object.values(this.extGStates).map(gs => `/${gs.name} ${gs.id} 0 R`).join(' ');
+    const parts = ['<<'];
+    parts.push(`/Font << ${fontEntries} >>`);
+    parts.push('/XObject << >>');
+    if (gStateEntries) parts.push(`/ExtGState << ${gStateEntries} >>`);
+    parts.push('>>');
+    return parts.join(' ');
+  }
   _addObject(s){ const id=this.nextId++; this.objects.push({id,data:String(s)}); return id; }
   _addObjectRaw(b){ const id=this.nextId++; this.objects.push({id,data:b}); return id; }
   _allocFontTag(){ let i=1; while(this.fonts['F'+i]) i++; return 'F'+i; }
+  _allocGStateTag(){ const name = 'GS'+this._gsCount++; return name; }
+
+  _ensureExtGState({ fillAlpha=1, strokeAlpha=1 }={}){
+    const f = Number.isFinite(fillAlpha) ? Math.max(0, Math.min(1, fillAlpha)) : 1;
+    const s = Number.isFinite(strokeAlpha) ? Math.max(0, Math.min(1, strokeAlpha)) : f;
+    const key = `${f.toFixed(3)}_${s.toFixed(3)}`;
+    if (this.extGStates[key]) return this.extGStates[key];
+    const parts = ['<< /Type /ExtGState'];
+    if (f < 1) parts.push(`/ca ${fnum(f)}`);
+    if (s < 1) parts.push(`/CA ${fnum(s)}`);
+    parts.push('>>');
+    const objId = this._addObject(parts.join(' '));
+    const name = this._allocGStateTag();
+    const gs = { id: objId, name, fillAlpha: f, strokeAlpha: s };
+    this.extGStates[key] = gs;
+    this._propagateExtGState(gs);
+    return gs;
+  }
+
+  _propagateExtGState(gs){
+    const token = `/${gs.name} ${gs.id} 0 R`;
+    for (const pg of this.pages){
+      const res = this.objects.find(o => o.id === pg.resourcesId);
+      if (!res) continue;
+      let data = String(res.data);
+      if (data.includes(token)) continue;
+      if (data.includes('/ExtGState')){
+        res.data = data.replace('/ExtGState <<', `/ExtGState << ${token} `);
+      } else {
+        const idx = data.lastIndexOf('>>');
+        if (idx !== -1) res.data = data.slice(0, idx) + ` /ExtGState << ${token} >> >>`;
+      }
+    }
+  }
 
   /* TTF kayıt + gömme (Type0/CIDFontType2 + ToUnicode) */
   registerTTF(tag, ttfPath){
@@ -337,20 +415,41 @@ endstream`;
 class Canvas {
   constructor(pdf, pageIndex){ this.pdf=pdf; this.p=pageIndex; const pg=pdf.pages[pageIndex]; this.W=pg.width; this.H=pg.height; this.state={font:'F1', metrics:null}; }
   setFont(fontTag, metrics){ this.state.font=fontTag; this.state.metrics=metrics; }
-  text({t,x,y,sz=12,c=null,font}){
+  text({t,x,y,sz=12,c=null,font,alpha=1}){
     const tag = font||this.state.font;
+    const useAlpha = alpha !== undefined && alpha < 1;
+    let gs=null;
+    if (useAlpha){
+      gs = this.pdf._ensureExtGState({ fillAlpha: alpha, strokeAlpha: alpha });
+      this.pdf.cmd(this.p,'q');
+      this.pdf.cmd(this.p,`/${gs.name} gs`);
+    }
     if (tag==='F1') this.pdf.drawTextSimple(this.p, t, x, y, {size:sz, color:c, fontTag:tag});
     else            this.pdf.drawTextU16  (this.p, t, x, y, {size:sz, color:c, fontTag:tag});
+    if (useAlpha) this.pdf.cmd(this.p,'Q');
   }
-  textFit({t,x,y,w,h,min=8,max=72,c=null,font}){
+  textFit({t,x,y,w,h,min=8,max=72,c=null,font,alpha=1}){
     const tag=font||this.state.font, m=this.state.metrics;
-    if (!m){ let sz=max, tw=t.length*sz*0.5; while(tw>w && sz>min){ sz-=0.5; tw=t.length*sz*0.5; } this.text({t,x:x+(w-tw)/2,y:y+(h-sz)/2,sz,c,font:tag}); return sz; }
+    if (!m){ let sz=max, tw=t.length*sz*0.5; while(tw>w && sz>min){ sz-=0.5; tw=t.length*sz*0.5; } this.text({t,x:x+(w-tw)/2,y:y+(h-sz)/2,sz,c,font:tag,alpha}); return sz; }
     let lo=min, hi=max, best=min;
     while(hi-lo>0.5){ const mid=(hi+lo)/2, tw=m.textWidth(t, mid); if (tw<=w){ best=mid; lo=mid; } else hi=mid; }
     const tw=m.textWidth(t,best); const base=y+(h-best)/2;
-    this.text({t, x:x+(w-tw)/2, y:base, sz:best, c, font:tag}); return best;
+    this.text({t, x:x+(w-tw)/2, y:base, sz:best, c, font:tag, alpha}); return best;
   }
-  rect({x,y,w,h,fill=null,stroke=null,sw=1}){ this.pdf.drawRect(this.p, x,y,w,h, {fillColor:fill, strokeColor:stroke, strokeWidth:sw}); }
+  rect({x,y,w,h,fill=null,stroke=null,sw=1,alpha=1,alphaStroke=1,radius=0}){
+    const hasFill = Array.isArray(fill);
+    const hasStroke = Array.isArray(stroke);
+    const useAlpha = (hasFill && alpha < 1) || (hasStroke && alphaStroke < 1);
+    let gs=null;
+    if (useAlpha){
+      gs = this.pdf._ensureExtGState({ fillAlpha: hasFill?alpha:1, strokeAlpha: hasStroke?alphaStroke:1 });
+      this.pdf.cmd(this.p,'q');
+      this.pdf.cmd(this.p,`/${gs.name} gs`);
+    }
+    if (radius){ this.pdf.drawRoundedRect(this.p, x,y,w,h,{fillColor:fill, strokeColor:stroke, strokeWidth:sw, radius}); }
+    else this.pdf.drawRect(this.p, x,y,w,h, {fillColor:fill, strokeColor:stroke, strokeWidth:sw});
+    if (useAlpha) this.pdf.cmd(this.p,'Q');
+  }
   frame({m=20, color=[3,50,72], sw=4}={}){ this.pdf.setStrokeColor(this.p,...color); this.pdf.setLineWidth(this.p,sw);
     const x0=m,y0=m,x1=this.W-m,y1=this.H-m; this.pdf.cmd(this.p,`${fnum(x0)} ${fnum(y0)} m`); this.pdf.cmd(this.p,`${fnum(x1)} ${fnum(y0)} l`);
     this.pdf.cmd(this.p,`${fnum(x1)} ${fnum(y1)} l`); this.pdf.cmd(this.p,`${fnum(x0)} ${fnum(y1)} l`); this.pdf.cmd(this.p,`${fnum(x0)} ${fnum(y0)} l`); this.pdf.cmd(this.p,'S'); }
@@ -383,10 +482,43 @@ class Renderer {
   run(spec){ const unit=spec.unit||'pt'; if (Array.isArray(spec.items)) for(const it of spec.items) this._it(it, unit); }
   _it(it,unit){
     const T=it.type;
-    if (T==='rect'){ this.cv.rect({x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), fill:it.fill||null, stroke:it.stroke||null, sw:it.sw||1}); }
-    else if (T==='text'){ this.cv.text({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), sz:it.size||12, c:it.color||null, font:it.font}); }
-    else if (T==='textFit'){ this.cv.textFit({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), min:it.min||8, max:it.max||48, c:it.color||null, font:it.font}); }
-    else if (T==='image'){ this.cv.imagePNG({path:it.src, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit)}); }
+    if (T==='rect'){
+      this.cv.rect({
+        x:toPt(it.x,unit),
+        y:toPt(it.y,unit),
+        w:toPt(it.w,unit),
+        h:toPt(it.h,unit),
+        fill:it.fill||null,
+        stroke:it.stroke||null,
+        sw:it.sw||1,
+        alpha: it.alpha !== undefined ? it.alpha : 1,
+        alphaStroke: it.alphaStroke !== undefined ? it.alphaStroke : (it.alpha !== undefined ? it.alpha : 1),
+        radius: it.radius || 0
+      });
+    }
+    else if (T==='strokeRect'){
+      this.cv.rect({
+        x:toPt(it.x,unit),
+        y:toPt(it.y,unit),
+        w:toPt(it.w,unit),
+        h:toPt(it.h,unit),
+        fill:null,
+        stroke:it.stroke||[0,0,0],
+        sw:it.sw||1,
+        alpha:1,
+        alphaStroke: it.alpha !== undefined ? it.alpha : 1,
+        radius: it.radius || 0
+      });
+    }
+    else if (T==='text'){
+      this.cv.text({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), sz:it.size||12, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1});
+    }
+    else if (T==='textFit'){
+      this.cv.textFit({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), min:it.min||8, max:it.max||48, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1});
+    }
+    else if (T==='image'){
+      this.cv.imagePNG({path:it.src, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit)});
+    }
     else if (T==='group' && Array.isArray(it.items)) for(const c of it.items) this._it(c,unit);
   }
 }

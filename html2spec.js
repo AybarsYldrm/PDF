@@ -309,32 +309,39 @@ function measureText(text, metrics, size){
   return text.length * size * 0.5;
 }
 
-function wrapLines(text, width, metrics, size){
+function measureStringWidth(text, metrics, size, letterSpacing=0){
+  if (!text) return 0;
+  const base = measureText(text, metrics, size);
+  if (!letterSpacing) return base;
+  const glyphCount = Array.from(text).length;
+  if (glyphCount <= 1) return base;
+  return base + letterSpacing * (glyphCount - 1);
+}
+
+function wrapLines(text, width, metrics, size, letterSpacing=0){
   const lines = [];
+  const maxWidth = width > 0 ? width : Infinity;
   const rawLines = text.split(/\r?\n/);
   for (const raw of rawLines){
     const words = raw.split(/\s+/).filter(Boolean);
-    if (!words.length){ lines.push({ text:'', width:0 }); continue; }
+    if (!words.length){
+      lines.push({ text:'', width:0 });
+      continue;
+    }
     let current = '';
-    let currentWidth = 0;
-    const spaceWidth = measureText(' ', metrics, size);
     for (const word of words){
-      const w = measureText(word, metrics, size);
-      if (!current){
-        current = word;
-        currentWidth = w;
-        continue;
-      }
-      if (currentWidth + spaceWidth + w <= width){
-        current += ' ' + word;
-        currentWidth += spaceWidth + w;
-      } else {
+      const next = current ? `${current} ${word}` : word;
+      const nextWidth = measureStringWidth(next, metrics, size, letterSpacing);
+      if (current && nextWidth > maxWidth){
+        const currentWidth = measureStringWidth(current, metrics, size, letterSpacing);
         lines.push({ text: current, width: currentWidth });
         current = word;
-        currentWidth = w;
+      } else {
+        current = next;
       }
     }
-    if (current) lines.push({ text: current, width: currentWidth });
+    const finalWidth = measureStringWidth(current, metrics, size, letterSpacing);
+    lines.push({ text: current, width: finalWidth });
   }
   if (!lines.length) lines.push({ text:'', width:0 });
   return lines;
@@ -415,6 +422,14 @@ function parseBoxShadow(style, ctx){
   if (numbers.length < 2) return null;
   const [ox, oy, blur=0, spread=0] = numbers.map(v => resolveLength(parseLength(v, ctx), ctx) || 0);
   return { ox, oy, blur, spread, color };
+}
+
+function resolveLetterSpacing(style, fontSize, context){
+  const raw = style['letter-spacing'];
+  if (!raw || raw === 'normal') return 0;
+  const len = parseLength(raw, { fontSize, base: fontSize, viewportWidth: context?.viewportWidth, viewportHeight: context?.viewportHeight });
+  const resolved = resolveLength(len, { base: fontSize, fontSize, viewportWidth: context?.viewportWidth || 0, viewportHeight: context?.viewportHeight || 0 });
+  return typeof resolved === 'number' ? resolved : 0;
 }
 
 function createFlowSpec(root, options){
@@ -578,6 +593,7 @@ function layoutElement(node, parentBox, context){
   const children = node.children || [];
   const absoluteChildren = [];
   const isFlex = isFlexDisplay(style);
+  const letterSpacing = resolveLetterSpacing(style, fontSize, context);
 
   if (isFlex){
     innerCursor = layoutFlex(children, {
@@ -613,7 +629,7 @@ function layoutElement(node, parentBox, context){
         }
       }
       if (!lineHeight) lineHeight = fontSize * 1.4;
-      const lines = wrapLines(applyTransform(text, transform), innerWidth, context.metrics, fontSize);
+      const lines = wrapLines(applyTransform(text, transform), innerWidth, context.metrics, fontSize, letterSpacing);
       for (const ln of lines){
         const lineText = ln.text;
         const lineWidth = ln.width;
@@ -621,7 +637,7 @@ function layoutElement(node, parentBox, context){
         if (align === 'center') textX = innerX + (innerWidth - lineWidth)/2;
         else if (align === 'right') textX = innerX + innerWidth - lineWidth;
         const lineBaseline = innerCursor + fontSize;
-        addTextItem(context, parentBox.pageIndex, textX, lineBaseline, fontSize, color, lineText, context.defaultFontTag);
+        addTextItem(context, parentBox.pageIndex, textX, lineBaseline, fontSize, color, lineText, context.defaultFontTag, letterSpacing);
         innerCursor += lineHeight;
       }
       pendingText = '';
@@ -718,15 +734,16 @@ function layoutAbsolute(node, anchor, context){
   const color = toRGBA(parseColor(style.color) || parseColor(anchor.computedStyle?.color) || {r:0,g:0,b:0,a:1});
   const align = style['text-align'] || 'left';
   const transform = style['text-transform'] || anchor.computedStyle?.['text-transform'] || 'none';
+  const letterSpacing = resolveLetterSpacing(style, fontSize, context);
   const text = collectText(node).trim();
   if (text){
-    const lines = wrapLines(applyTransform(text, transform), innerWidth, context.metrics, fontSize);
+    const lines = wrapLines(applyTransform(text, transform), innerWidth, context.metrics, fontSize, letterSpacing);
     for (const ln of lines){
       const lineBaseline = innerCursor + fontSize;
       let textX = x;
       if (align === 'center') textX = x + (innerWidth - ln.width)/2;
       else if (align === 'right') textX = x + innerWidth - ln.width;
-      addTextItem(context, anchor.layout.pageIndex, textX, lineBaseline, fontSize, color, ln.text, context.defaultFontTag);
+      addTextItem(context, anchor.layout.pageIndex, textX, lineBaseline, fontSize, color, ln.text, context.defaultFontTag, letterSpacing);
       innerCursor += fontSize * 1.4;
     }
   }
@@ -767,6 +784,59 @@ function layoutImage(node, x, cursorY, maxWidth, context, pageIndex){
   };
 }
 
+function estimateFlexAutoWidth(node, context, parentFontSize, innerWidth){
+  const style = node.computedStyle || {};
+  const baseFontSize = parentFontSize || 12;
+  const fontSize = resolveLength(parseLength(style['font-size'] || (node.parent?.computedStyle?.['font-size'] ?? `${baseFontSize}pt`), { fontSize: baseFontSize }), {
+    fontSize: baseFontSize,
+    base: innerWidth,
+    viewportWidth: context.viewportWidth,
+    viewportHeight: context.viewportHeight,
+  }) || baseFontSize;
+  const padding = toBox(parseBoxEdges(style, 'padding', { fontSize, base: innerWidth, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight }));
+  const border = parseBorder(style, { fontSize, base: innerWidth, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight });
+
+  let contentWidth = 0;
+
+  if (node.name === 'img'){
+    const src = node.attrs.src;
+    if (src){
+      const resolved = resolveResource(src, context.htmlPath);
+      const info = getImageDimensions(resolved);
+      const widthSpecified = resolveLength(parseLength(style.width, { fontSize }), { base: innerWidth, fontSize, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight });
+      const heightSpecified = resolveLength(parseLength(style.height, { fontSize }), { base: context.viewportHeight, fontSize, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight });
+      let width = typeof widthSpecified === 'number' ? widthSpecified : (info.widthPt || innerWidth);
+      if (typeof heightSpecified === 'number' && typeof widthSpecified !== 'number' && info.heightPt){
+        width = heightSpecified * (info.widthPt / info.heightPt);
+      }
+      contentWidth = Math.min(width, innerWidth);
+    }
+  } else {
+    const text = collectText(node).trim();
+    if (text){
+      const transform = style['text-transform'] || node.parent?.computedStyle?.['text-transform'] || 'none';
+      const letterSpacing = resolveLetterSpacing(style, fontSize, context);
+      const words = text.split(/\s+/).filter(Boolean);
+      if (words.length){
+        let maxWord = 0;
+        for (const word of words){
+          const sample = applyTransform(word, transform);
+          const widthWord = measureStringWidth(sample, context.metrics, fontSize, letterSpacing);
+          if (widthWord > maxWord) maxWord = widthWord;
+        }
+        contentWidth = maxWord;
+      } else {
+        const sample = applyTransform(text, transform);
+        contentWidth = measureStringWidth(sample, context.metrics, fontSize, letterSpacing);
+      }
+    }
+  }
+
+  const total = contentWidth + (padding.left || 0) + (padding.right || 0) + ((border.width || 0) * 2);
+  if (!total) return 0;
+  return Math.max(0, Math.min(total, innerWidth));
+}
+
 function layoutFlex(children, { node, innerX, innerWidth, startY, parentBox, context, fontSize, absoluteChildren }){
   const items = [];
   for (const ch of children){
@@ -775,7 +845,11 @@ function layoutFlex(children, { node, innerX, innerWidth, startY, parentBox, con
       const childStyle = ch.computedStyle || {};
       if ((childStyle.display || '').toLowerCase() === 'none') continue;
       const margin = toBox(parseBoxEdges(childStyle, 'margin', { fontSize, base: innerWidth, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight }));
-      const basis = parseFlexBasis(childStyle, { base: innerWidth, fontSize, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight }) || 0;
+      let basis = parseFlexBasis(childStyle, { base: innerWidth, fontSize, viewportWidth: context.viewportWidth, viewportHeight: context.viewportHeight }) || 0;
+      if (basis <= 0){
+        const intrinsic = estimateFlexAutoWidth(ch, context, fontSize, innerWidth);
+        if (intrinsic > 0) basis = intrinsic;
+      }
       const grow = parseFlexGrow(childStyle);
       items.push({ node: ch, margin, basis, grow });
     }
@@ -864,11 +938,13 @@ function collectText(node){
   return node.children.map(collectText).join(' ');
 }
 
-function addTextItem(context, pageIndex, x, baseline, size, color, text, fontTag){
+function addTextItem(context, pageIndex, x, baseline, size, color, text, fontTag, letterSpacing){
   const page = context.pages[pageIndex];
   const y = page.height - baseline;
   const rgb = [color.r, color.g, color.b];
-  page.items.push({ type:'text', t:text, x, y, size, color: rgb, alpha: color.a, font: fontTag });
+  const item = { type:'text', t:text, x, y, size, color: rgb, alpha: color.a, font: fontTag };
+  if (letterSpacing) item.letterSpacing = letterSpacing;
+  page.items.push(item);
 }
 
 function paintBox(node, context, insertIndex){

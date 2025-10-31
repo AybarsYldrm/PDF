@@ -505,9 +505,10 @@ return out; }
 class Canvas {
   constructor(pdf, pageIndex){ this.pdf=pdf; this.p=pageIndex; const pg=pdf.pages[pageIndex]; this.W=pg.width; this.H=pg.height; this.state={font:'F1', metrics:null}; }
   setFont(fontTag, metrics){ this.state.font=fontTag; this.state.metrics=metrics; }
-  text({t,x,y,sz=12,c=null,font,alpha=1}){
+  text({t,x,y,sz=12,c=null,font,alpha=1,letterSpacing=0}){
     const tag = font||this.state.font;
     const metrics = this.pdf.fontMetrics?.[tag] || this.state.metrics;
+    const spacing = Number.isFinite(letterSpacing) ? letterSpacing : 0;
     const useAlpha = alpha !== undefined && alpha < 1;
     let gs=null;
     if (useAlpha){
@@ -515,11 +516,18 @@ class Canvas {
       this.pdf.cmd(this.p,'q');
       this.pdf.cmd(this.p,`/${gs.name} gs`);
     }
-    if (tag==='F1' || !metrics || !metrics.encodeText){
-      this.pdf.drawTextSimple(this.p, t, x, y, {size:sz, color:c, fontTag:tag});
-    } else {
-      const glyphHex = metrics.encodeText(t);
-      this.pdf.drawTextCID(this.p, glyphHex, x, y, {size:sz, color:c, fontTag:tag});
+    if (t){
+      const glyphs = Array.from(t);
+      if (spacing && glyphs.length > 1){
+        let cursor = x;
+        glyphs.forEach((ch, idx) => {
+          this._drawGlyph(tag, metrics, ch, cursor, y, sz, c);
+          cursor += this._glyphAdvance(metrics, ch, sz);
+          if (idx < glyphs.length - 1) cursor += spacing;
+        });
+      } else {
+        this._drawGlyph(tag, metrics, t, x, y, sz, c);
+      }
     }
     if (useAlpha) this.pdf.cmd(this.p,'Q');
   }
@@ -570,6 +578,22 @@ class Canvas {
     }
     this.pdf.drawImageXObject(this.p, xName, x,y,w,h);
   }
+  _drawGlyph(tag, metrics, text, x, y, sz, color){
+    if (!text) return;
+    if (tag==='F1' || !metrics || !metrics.encodeText){
+      this.pdf.drawTextSimple(this.p, text, x, y, {size:sz, color, fontTag:tag});
+    } else {
+      const glyphHex = metrics.encodeText(text);
+      this.pdf.drawTextCID(this.p, glyphHex, x, y, {size:sz, color, fontTag:tag});
+    }
+  }
+  _glyphAdvance(metrics, text, sz){
+    if (!text) return 0;
+    if (metrics && typeof metrics.textWidth === 'function'){
+      return metrics.textWidth(text, sz);
+    }
+    return Array.from(text).length * sz * 0.5;
+  }
   static _uniqueName(pdf,p){ let i=1; for(;;){ const n=`Im${i}`; const res=pdf.objects.find(o=>o.id===pdf.pages[p].resourcesId); if(!String(res.data).includes(`/${n} `)) return n; i++; } }
 }
 
@@ -607,7 +631,7 @@ class Renderer {
       });
     }
     else if (T==='text'){
-      this.cv.text({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), sz:it.size||12, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1});
+      this.cv.text({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), sz:it.size||12, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1, letterSpacing: it.letterSpacing || 0});
     }
     else if (T==='textFit'){
       this.cv.textFit({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), min:it.min||8, max:it.max||48, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1});

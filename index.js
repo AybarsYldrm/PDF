@@ -13,23 +13,30 @@ function toPtMM(v){ return v*PT_PER_MM; }
 function buildPdfFromHtml({ htmlPath, outPdf, ttfPath }){
   const html = fs.readFileSync(htmlPath, 'utf8');
 
+  const pageWidthPt  = toPtMM(PAGE_MM.w);
+  const pageHeightPt = toPtMM(PAGE_MM.h);
+
   const pdf = new PDFDoc({ title: 'HTML Render', author: 'FITFAK', compress: true });
-  const p = pdf.addPage({ width: toPtMM(PAGE_MM.w), height: toPtMM(PAGE_MM.h) });
 
   // Unicode font zorunlu
   const { fontTag, metrics } = pdf.registerTTF('NotoSans', ttfPath);
 
-  const cv = new Canvas(pdf, p);
-  cv.setFont(fontTag, metrics);
-
   // HTML → Spec
-  const pageWidthPt  = toPtMM(PAGE_MM.w);
-  const pageHeightPt = toPtMM(PAGE_MM.h);
-  const spec = htmlToSpec(html, { pageWidthPt, pageHeightPt, unitDefault:'px', defaultFontTag: fontTag });
+  const spec = htmlToSpec(html, { pageWidthPt, pageHeightPt, unitDefault:'px', defaultFontTag: fontTag, metrics, htmlPath });
 
-  // İstersen çerçeve vb.
-  const r = new Renderer(pdf, p, cv);
-  r.run({ unit:'pt', items: spec.items });
+  const pageSpecs = Array.isArray(spec.pages) && spec.pages.length
+    ? spec.pages
+    : [{ width: pageWidthPt, height: pageHeightPt, unit: spec.unit || 'pt', items: spec.items || [] }];
+
+  for (const pageSpec of pageSpecs){
+    const width = pageSpec.width || pageWidthPt;
+    const height = pageSpec.height || pageHeightPt;
+    const pageIndex = pdf.addPage({ width, height });
+    const cv = new Canvas(pdf, pageIndex);
+    cv.setFont(fontTag, metrics);
+    const renderer = new Renderer(pdf, pageIndex, cv);
+    renderer.run({ unit: pageSpec.unit || spec.unit || 'pt', items: pageSpec.items || [] });
+  }
 
   pdf.save(outPdf);
   console.log(`OK -> ${outPdf}`);

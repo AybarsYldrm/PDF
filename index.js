@@ -6,7 +6,7 @@ const { htmlToSpec } = require('./html2spec');
 // PDFDoc, Canvas, Renderer — fitfak_pdf_core.js içinden import et:
 const { PDFDoc, Canvas, Renderer } = require('./core'); // <- senin dosyan
 
-const PAGE_MM = { w: 297, h: 210 }; // A4 landscape
+const PAGE_MM = { w: 210, h: 148 }; // A5 landscape
 const PT_PER_MM = 72/25.4;
 
 function toPtMM(v){ return v*PT_PER_MM; }
@@ -20,7 +20,7 @@ function buildPdfFromHtml({ htmlPath, outPdf, ttfPath }){
   const pdf = new PDFDoc({ title: 'HTML Render', author: 'FITFAK', compress: true });
 
   // Unicode font zorunlu
-  const { fontTag, metrics } = pdf.registerTTF('NotoSans', ttfPath);
+  const { fontTag, metrics } = pdf.registerTTF('OpenSans', ttfPath);
 
   // HTML → Spec
   const spec = htmlToSpec(html, { pageWidthPt, pageHeightPt, unitDefault:'px', defaultFontTag: fontTag, metrics, htmlPath });

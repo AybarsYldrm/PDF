@@ -12,6 +12,8 @@ const VOID_ELEMENTS = new Set(['br','hr','img','meta','input','link','source','a
 const NAMED_SIZES = {
   a4: { width: PT_PER_MM * 210, height: PT_PER_MM * 297 },
   'a4-landscape': { width: PT_PER_MM * 297, height: PT_PER_MM * 210 },
+  a5: { width: PT_PER_MM * 148, height: PT_PER_MM * 210 },
+  'a5-landscape': { width: PT_PER_MM * 210, height: PT_PER_MM * 148 },
   a3: { width: PT_PER_MM * 297, height: PT_PER_MM * 420 },
   letter: { width: PT_PER_IN * 8.5, height: PT_PER_IN * 11 },
   'letter-landscape': { width: PT_PER_IN * 11, height: PT_PER_IN * 8.5 },

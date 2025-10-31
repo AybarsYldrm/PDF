@@ -2,7 +2,7 @@
 <html lang="tr">
 <head>
   <meta charset="utf-8">
-  <meta name="pdf:page" content="A4 landscape">
+  <meta name="pdf:page" content="A5 landscape">
   <style>
     @font-face {
       font-family: "Open Sans";
@@ -17,26 +17,29 @@
 
     body {
       margin: 0;
+      padding: 10mm;
       font-family: "Open Sans", Arial, sans-serif;
-      background: linear-gradient(130deg, #f0f6fb 0%, #ffffff 65%);
-      color: #012941;
-      padding: 18mm 24mm;
+      background: linear-gradient(135deg, #eff4fb 0%, #ffffff 70%);
+      color: #0c2f47;
     }
 
-    .page {
+    .certificate {
       background: #ffffff;
+      border: 0.7mm solid #0c4a6e;
       border-radius: 6mm;
-      border: 0.6mm solid #0a3a54;
-      padding: 18mm 20mm;
-      box-shadow: 0 6mm 18mm rgba(12, 42, 63, 0.18);
+      padding: 12mm 16mm;
+      display: flex;
+      flex-direction: column;
+      gap: 8mm;
+      box-shadow: 0 4mm 14mm rgba(12,42,63,0.14);
       min-height: 100mm;
     }
 
     .header {
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      gap: 16mm;
+      justify-content: space-between;
+      gap: 12mm;
     }
 
     .header img {
@@ -45,82 +48,82 @@
     }
 
     .badge {
-      flex: 1;
       text-align: center;
       text-transform: uppercase;
-      letter-spacing: 1.2mm;
-      font-size: 4.4mm;
-      color: #035f8f;
+      letter-spacing: 1.1mm;
+      font-size: 4mm;
+      color: #0c4a6e;
+      font-weight: 600;
     }
 
     .hero {
       text-align: center;
-      margin-bottom: 10mm;
     }
 
-    .hero h1 {
-      margin: 0 0 4mm;
-      font-size: 14mm;
-      text-transform: uppercase;
-      letter-spacing: 1mm;
-      color: #012941;
-    }
-
-    .hero p {
+    .hero .title {
       margin: 0;
-      font-size: 4mm;
+      font-size: 12mm;
+      letter-spacing: 0.8mm;
+      text-transform: uppercase;
+      color: #0c2f47;
+    }
+
+    .hero .subtitle {
+      margin: 1mm 0 0;
+      font-size: 3.9mm;
       line-height: 1.6;
-      color: #4c5b63;
+      color: #516371;
     }
 
     .recipient {
       margin: 0 auto;
-      padding: 8mm 12mm;
-      border: 0.5mm solid #012941;
-      border-radius: 3mm;
-      background: #f5fbff;
       width: 70%;
+      border: 0.6mm solid #0c4a6e;
+      border-radius: 3.6mm;
+      padding: 7mm 10mm;
+      background: #f3f8ff;
       text-align: center;
     }
 
     .recipient span {
-      font-size: 8mm;
+      display: block;
+      font-size: 7.2mm;
+      letter-spacing: 0.7mm;
       font-weight: 600;
-      letter-spacing: 0.8mm;
-      color: #012941;
+      color: #0c4a6e;
       text-transform: uppercase;
     }
 
     .summary {
-      font-size: 4mm;
-      line-height: 1.6;
-      color: #42535c;
+      margin: 0 16mm;
+      font-size: 3.9mm;
+      line-height: 1.7;
+      color: #465a68;
       text-align: center;
-      margin: 0 15mm;
     }
 
     .signature-row {
       display: flex;
       justify-content: space-between;
-      align-items: flex-start;
       gap: 18mm;
-      margin-top: 6mm;
+      margin-top: 4mm;
     }
 
     .signature {
       flex: 1;
+      color: #465a68;
     }
 
     .signature .label {
       text-transform: uppercase;
-      font-size: 3.6mm;
-      letter-spacing: 0.8mm;
-      color: #0e3b52;
+      letter-spacing: 0.6mm;
+      font-size: 3.4mm;
+      color: #0c4a6e;
     }
 
     .signature .value {
+      margin-top: 2mm;
       font-size: 3.6mm;
-      color: #42535c;
     }
 
     .signature--right {
@@ -128,15 +131,16 @@
     }
 
     .footer-note {
+      margin: 6mm auto 0;
       text-align: center;
       font-size: 3mm;
-      color: #556b77;
-      margin-top: 12mm;
+      color: #6a7c88;
+      letter-spacing: 0.2mm;
     }
   </style>
 </head>
 <body>
-  <div class="page">
+  <div class="certificate">
     <div class="header">
       <img src="861ec4b82166.png" alt="Sol Logo">
       <div class="badge">Katılım Belgesi</div>
@@ -144,12 +148,12 @@
     </div>
 
     <div class="hero">
-      <h1>Başarı Sertifikası</h1>
-      <p>Aşağıda adı geçen kişinin programa olan özverili katılımı ve olağanüstü performansı onuruna bu belge düzenlenmiştir.</p>
+      <h1 class="title">Başarı Sertifikası</h1>
+      <p class="subtitle">Aşağıda adı geçen kişinin programa olan özverili katılımı ve olağanüstü performansı onuruna bu belge düzenlenmiştir.</p>
     </div>
 
     <div class="recipient">
-      <span>SELAHATTİN AYBARS YILDIRIM</span>
+      <span>Selahattin Aybars Yıldırım</span>
     </div>
 
     <p class="summary">Program boyunca sergilediği liderlik, takım çalışması ve yenilikçi katkılarından dolayı tebrik eder, gelecekteki başarılarının devamını dileriz.</p>

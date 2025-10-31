@@ -11,13 +11,6 @@ const rgb  = (r,g,b) => `${(clamp255(r)/255).toFixed(3)} ${(clamp255(g)/255).toF
 const esc  = t => String(t).replace(/([()\\])/g,'\\$1');
 const toPt = (v,u='pt') => u==='pt'?v : u==='mm'? v*(72/25.4) : u==='px'? v*(72/96) : v;
 
-function utf16Hex(s){
-  const b = Buffer.alloc(2 + s.length*2);
-  b.writeUInt16BE(0xFEFF,0);
-  let o=2; for(const ch of s){ b.writeUInt16BE(ch.codePointAt(0), o); o+=2; }
-  return '<'+b.toString('hex').toUpperCase()+'>';
-}
-
 /* ---------- PDF çekirdeği ---------- */
 class PDFDoc {
   constructor({ title='Untitled', author='Node', compress=true }={}){
@@ -31,6 +24,9 @@ class PDFDoc {
     this.catalogId = null;
     this.pagesTreeId = null;
     this.fonts = {};
+    this.fontMetrics = {};
+    this.extGStates = {};
+    this._gsCount = 1;
     // Base14 fallback (sadece ASCII)
     this.fonts.F1 = this._addObject(`<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>`);
   }
@@ -70,6 +66,39 @@ class PDFDoc {
     else if (strokeColor) this.stroke(p);
   }
 
+  drawRoundedRect(p,x,y,w,h,{fillColor=null,strokeColor=null,strokeWidth=1,radius=0}={}){
+    const r = Math.max(0, Math.min(radius || 0, Math.min(w,h)/2));
+    if (r <= 0){ this.drawRect(p,x,y,w,h,{fillColor,strokeColor,strokeWidth}); return; }
+    const cmds = this._roundedRectPath(x,y,w,h,r);
+    this._paintPath(p, cmds, {fillColor, strokeColor, strokeWidth});
+  }
+
+  _paintPath(p, cmds, {fillColor=null, strokeColor=null, strokeWidth=1}={}){
+    if (fillColor) this.setFillColor(p, ...fillColor);
+    if (strokeColor){ this.setStrokeColor(p, ...strokeColor); this.setLineWidth(p, strokeWidth); }
+    this.cmd(p, cmds.join('\n'));
+    if (fillColor && strokeColor) this.fillStroke(p);
+    else if (fillColor) this.fill(p);
+    else if (strokeColor) this.stroke(p);
+  }
+
+  _roundedRectPath(x,y,w,h,r){
+    const k = 0.552284749831;
+    const c = r * k;
+    const cmds = [];
+    cmds.push(`${fnum(x+r)} ${fnum(y)} m`);
+    cmds.push(`${fnum(x+w-r)} ${fnum(y)} l`);
+    cmds.push(`${fnum(x+w-r+c)} ${fnum(y)} ${fnum(x+w)} ${fnum(y+c)} ${fnum(x+w)} ${fnum(y+r)} c`);
+    cmds.push(`${fnum(x+w)} ${fnum(y+h-r)} l`);
+    cmds.push(`${fnum(x+w)} ${fnum(y+h-r+c)} ${fnum(x+w-r+c)} ${fnum(y+h)} ${fnum(x+w-r)} ${fnum(y+h)} c`);
+    cmds.push(`${fnum(x+r)} ${fnum(y+h)} l`);
+    cmds.push(`${fnum(x+r-c)} ${fnum(y+h)} ${fnum(x)} ${fnum(y+h-r+c)} ${fnum(x)} ${fnum(y+h-r)} c`);
+    cmds.push(`${fnum(x)} ${fnum(y+r)} l`);
+    cmds.push(`${fnum(x)} ${fnum(y+r-c)} ${fnum(x+r-c)} ${fnum(y)} ${fnum(x+r)} ${fnum(y)} c`);
+    cmds.push('h');
+    return cmds;
+  }
+
   drawTextSimple(p,text,x,y,{size=12,color=null,fontTag='F1'}={}){
     const a=['BT', `/${fontTag} ${fnum(size)} Tf`, `${fnum(x)} ${fnum(y)} Td`];
     if (color) a.push(`${rgb(...color)} rg`);
@@ -77,10 +106,11 @@ class PDFDoc {
     this.cmd(p, a.join('\n'));
   }
 
-  drawTextU16(p,text,x,y,{size=12,color=null,fontTag='F1'}={}){
+  drawTextCID(p, glyphHex, x, y, { size=12, color=null, fontTag='F1' }={}){
     const a=['BT', `/${fontTag} ${fnum(size)} Tf`, `${fnum(x)} ${fnum(y)} Td`];
     if (color) a.push(`${rgb(...color)} rg`);
-    a.push(`${utf16Hex(text)} Tj`, 'ET');
+    const payload = glyphHex && glyphHex.length ? `<${glyphHex}>` : '()';
+    a.push(`${payload} Tj`, 'ET');
     this.cmd(p, a.join('\n'));
   }
 
@@ -142,28 +172,80 @@ ${xrefStart}
   }
 
   /* kaynak yardımcıları */
-  _resourcesDict(){ const f=Object.entries(this.fonts).map(([k,id])=>`/${k} ${id} 0 R`).join(' '); return `<< /Font << ${f} >> /XObject << >> >>`; }
+  _resourcesDict(){
+    const fontEntries = Object.entries(this.fonts).map(([k,id])=>`/${k} ${id} 0 R`).join(' ');
+    const gStateEntries = Object.values(this.extGStates).map(gs => `/${gs.name} ${gs.id} 0 R`).join(' ');
+    const parts = ['<<'];
+    parts.push(`/Font << ${fontEntries} >>`);
+    parts.push('/XObject << >>');
+    if (gStateEntries) parts.push(`/ExtGState << ${gStateEntries} >>`);
+    parts.push('>>');
+    return parts.join(' ');
+  }
   _addObject(s){ const id=this.nextId++; this.objects.push({id,data:String(s)}); return id; }
   _addObjectRaw(b){ const id=this.nextId++; this.objects.push({id,data:b}); return id; }
   _allocFontTag(){ let i=1; while(this.fonts['F'+i]) i++; return 'F'+i; }
+  _allocGStateTag(){ const name = 'GS'+this._gsCount++; return name; }
+
+  _ensureExtGState({ fillAlpha=1, strokeAlpha=1 }={}){
+    const f = Number.isFinite(fillAlpha) ? Math.max(0, Math.min(1, fillAlpha)) : 1;
+    const s = Number.isFinite(strokeAlpha) ? Math.max(0, Math.min(1, strokeAlpha)) : f;
+    const key = `${f.toFixed(3)}_${s.toFixed(3)}`;
+    if (this.extGStates[key]) return this.extGStates[key];
+    const parts = ['<< /Type /ExtGState'];
+    if (f < 1) parts.push(`/ca ${fnum(f)}`);
+    if (s < 1) parts.push(`/CA ${fnum(s)}`);
+    parts.push('>>');
+    const objId = this._addObject(parts.join(' '));
+    const name = this._allocGStateTag();
+    const gs = { id: objId, name, fillAlpha: f, strokeAlpha: s };
+    this.extGStates[key] = gs;
+    this._propagateExtGState(gs);
+    return gs;
+  }
+
+  _propagateExtGState(gs){
+    const token = `/${gs.name} ${gs.id} 0 R`;
+    for (const pg of this.pages){
+      const res = this.objects.find(o => o.id === pg.resourcesId);
+      if (!res) continue;
+      let data = String(res.data);
+      if (data.includes(token)) continue;
+      if (data.includes('/ExtGState')){
+        res.data = data.replace('/ExtGState <<', `/ExtGState << ${token} `);
+      } else {
+        const idx = data.lastIndexOf('>>');
+        if (idx !== -1) res.data = data.slice(0, idx) + ` /ExtGState << ${token} >> >>`;
+      }
+    }
+  }
 
   /* TTF kayıt + gömme (Type0/CIDFontType2 + ToUnicode) */
   registerTTF(tag, ttfPath){
     const ttf = fs.readFileSync(ttfPath);
     const parsed = TTF.parse(ttf);
-    const toUniId = this._addObject(TTF.makeToUnicodeCMap(tag));
+    const toUniId = this._addObject(TTF.makeToUnicodeCMap(tag, parsed.glyphToUnicode));
     const fontFile2Id = this._addObjectRaw(Buffer.concat([
       Buffer.from(`<< /Length ${ttf.length} /Length1 ${ttf.length} /Filter /FlateDecode >>\nstream\n`),
       zlib.deflateSync(ttf), Buffer.from('\nendstream')
     ]));
+    const scale = 1000 / parsed.unitsPerEm;
+    const ascent = parsed.ascent * scale;
+    const descent = parsed.descent * scale;
+    const capHeight = parsed.ascent * scale;
+    const bbox = parsed.bbox.map(v => v * scale);
+    const defaultWidth = parsed.hmtx[0] || parsed.unitsPerEm;
+    const scaledWidths = parsed.hmtx.map(w => Math.round(w * scale));
+    const widthArray = `0 [${scaledWidths.map(fnum).join(' ')}]`;
     const fdId = this._addObject(`<<
 /Type /FontDescriptor
 /FontName /${tag}
 /Flags 32
 /ItalicAngle 0
-/Ascent ${parsed.ascent}
-/Descent ${parsed.descent}
-/CapHeight ${parsed.ascent}
+/Ascent ${fnum(ascent)}
+/Descent ${fnum(descent)}
+/CapHeight ${fnum(capHeight)}
+/FontBBox [${bbox.map(v => fnum(v)).join(' ')}]
 /StemV 80
 /FontFile2 ${fontFile2Id} 0 R
 >>`);
@@ -172,6 +254,9 @@ ${xrefStart}
 /BaseFont /${tag}
 /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>
 /FontDescriptor ${fdId} 0 R
+/DW ${fnum(defaultWidth * scale)}
+/W [ ${widthArray} ]
+/CIDToGIDMap /Identity
 >>`);
     const type0Id = this._addObject(`<<
 /Type /Font /Subtype /Type0
@@ -182,7 +267,9 @@ ${xrefStart}
 >>`);
     const fontTag = this._allocFontTag();
     this.fonts[fontTag] = type0Id;
-    return { fontTag, metrics: parsed };
+    const metrics = TTF.createMetrics(parsed);
+    this.fontMetrics[fontTag] = metrics;
+    return { fontTag, metrics };
   }
 }
 
@@ -261,43 +348,85 @@ class TTF {
     const tab = TTF._dir(buf);
     const head = TTF._head(buf, tab.head);
     const hhea = TTF._hhea(buf, tab.hhea);
+    const maxp = tab.maxp ? TTF._maxp(buf, tab.maxp) : { numGlyphs: TTF._fallbackGlyphCount(buf, tab, hhea) };
     const cmap = TTF._cmap4(buf, tab.cmap);
-    const hmtx = TTF._hmtx(buf, tab.hmtx, hhea);
+    const hmtx = TTF._hmtx(buf, tab.hmtx, hhea, maxp);
+    const glyphToUnicode = {};
+    for (const [key, gid] of Object.entries(cmap)){
+      if (!Number.isFinite(gid)) continue;
+      if (glyphToUnicode[gid] !== undefined) continue;
+      glyphToUnicode[gid] = Number(key);
+    }
+    if (glyphToUnicode[0] === undefined) glyphToUnicode[0] = 0;
+    const fallbackGlyphId = cmap[63] ?? cmap[32] ?? 0;
     return {
       unitsPerEm: head.unitsPerEm,
       ascent: hhea.ascent,
       descent: hhea.descent,
-      cmap, hmtx,
+      bbox: [head.xMin, head.yMin, head.xMax, head.yMax],
+      cmap, hmtx, glyphToUnicode, fallbackGlyphId,
       textWidth: (text, size)=>{
         let aw=0;
-        for(const ch of text){ const gid=cmap[ch.codePointAt(0)]||0; aw += (hmtx[gid] ?? hmtx[hmtx.length-1] ?? 0); }
+        for(const ch of text){
+          const cp=ch.codePointAt(0);
+          const gid=cmap[cp] ?? fallbackGlyphId;
+          aw += (hmtx[gid] ?? hmtx[hmtx.length-1] ?? hmtx[0] ?? 0);
+        }
         return aw * (size / head.unitsPerEm);
+      },
+      encodeText: (text)=>{
+        const bytes = [];
+        for (const ch of text){
+          const cp = ch.codePointAt(0);
+          const gid = cmap[cp] ?? fallbackGlyphId;
+          bytes.push((gid >> 8) & 0xFF, gid & 0xFF);
+        }
+        return Buffer.from(bytes).toString('hex').toUpperCase();
       }
     };
   }
-  static makeToUnicodeCMap(name){
-    return `<< /Length 300 >>\nstream
-/CIDInit /ProcSet findresource begin
-12 dict begin
-begincmap
-/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def
-/CMapName /${name} def
-/CMapType 2 def
-1 begincodespacerange
-<0000> <FFFF>
-endcodespacerange
-1 beginbfrange
-<0000> <FFFF> <0000>
-endbfrange
-endcmap
-CMapName currentdict /CMap defineresource pop
-end
-end
-endstream`;
+  static makeToUnicodeCMap(name, glyphMap={}){
+    const entries = Object.entries(glyphMap)
+      .map(([gid, cp]) => [Number(gid), Number(cp)])
+      .filter(([gid, cp]) => Number.isFinite(gid) && Number.isFinite(cp))
+      .sort((a,b)=>a[0]-b[0]);
+    const lines = [
+      '/CIDInit /ProcSet findresource begin',
+      '12 dict begin',
+      'begincmap',
+      '/CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> def',
+      `/CMapName /${name} def`,
+      '/CMapType 2 def',
+      '1 begincodespacerange',
+      '<0000> <FFFF>',
+      'endcodespacerange'
+    ];
+    for (let i=0;i<entries.length;i+=100){
+      const slice = entries.slice(i, i+100);
+      lines.push(`${slice.length} beginbfchar`);
+      for (const [gid, cp] of slice){
+        const gidHex = gid.toString(16).toUpperCase().padStart(4,'0');
+        const uniHex = TTF._unicodeHex(cp);
+        lines.push(`<${gidHex}> <${uniHex}>`);
+      }
+      lines.push('endbfchar');
+    }
+    lines.push('endcmap', 'CMapName currentdict /CMap defineresource pop', 'end', 'end');
+    const body = lines.join('\n');
+    return `<< /Length ${body.length} >>\nstream\n${body}\nendstream`;
   }
-  static _dir(buf){ const n=buf.readUInt16BE(4); const out={}; let p=12; for(let i=0;i<n;i++){ const tag=buf.toString('ascii',p,p+4); p+=4; p+=4; const off=buf.readUInt32BE(p); p+=4; const len=buf.readUInt32BE(p); p+=4; out[tag]={offset:off,length:len}; } return out; }
-  static _head(buf,t){ const p=t.offset; return { unitsPerEm: buf.readUInt16BE(p+18), indexToLocFormat: buf.readInt16BE(p+50) }; }
+  static _dir(buf){ const n=buf.readUInt16BE(4); const out={}; let p=12; for(let i=0;i<n;i++){ const tag=buf.toString('ascii',p, p+4); p+=4; p+=4; const off=buf.readUInt32BE(p); p+=4; const len=buf.readUInt32BE(p); p+=4; out[tag]={offset:off,length:len}; }
+return out; }
+  static _head(buf,t){ const p=t.offset; return {
+    unitsPerEm: buf.readUInt16BE(p+18),
+    indexToLocFormat: buf.readInt16BE(p+50),
+    xMin: buf.readInt16BE(p+36),
+    yMin: buf.readInt16BE(p+38),
+    xMax: buf.readInt16BE(p+40),
+    yMax: buf.readInt16BE(p+42)
+  }; }
   static _hhea(buf,t){ const p=t.offset; return { ascent:buf.readInt16BE(p+4), descent:buf.readInt16BE(p+6), numberOfHMetrics:buf.readUInt16BE(p+34), offset:p }; }
+  static _maxp(buf,t){ const p=t.offset; return { numGlyphs: buf.readUInt16BE(p+4) }; }
   static _cmap4(buf,t){
     let p=t.offset; p+=2; const num=buf.readUInt16BE(p); p+=2; let sub=null;
     for(let i=0;i<num;i++){ const plat=buf.readUInt16BE(p); p+=2; const enc=buf.readUInt16BE(p); p+=2; const off=buf.readUInt32BE(p); p+=4; if(plat===3 && (enc===1||enc===10)) sub=t.offset+off; }
@@ -326,31 +455,105 @@ endstream`;
     }
     return map;
   }
-  static _hmtx(buf,t,hhea){
+  static _hmtx(buf,t,hhea,maxp){
     const p=t.offset; const n=hhea.numberOfHMetrics; const aw=[]; let q=p;
-    for(let i=0;i<n;i++){ aw.push(buf.readUInt16BE(q)); q+=4; }
+    let last=0;
+    for(let i=0;i<n;i++){ last=buf.readUInt16BE(q); aw.push(last); q+=2; q+=2; }
+    const remaining = Math.max(0, (maxp?.numGlyphs||aw.length) - n);
+    for(let i=0;i<remaining;i++){ q+=2; }
+    for(let i=0;i<remaining;i++){ aw.push(last); }
     return aw;
   }
+  static _fallbackGlyphCount(buf, tab, hhea){
+    if (tab?.maxp) return TTF._maxp(buf, tab.maxp).numGlyphs;
+    return hhea.numberOfHMetrics;
+  }
+  static _unicodeHex(cp){
+    if (cp <= 0xFFFF) return cp.toString(16).toUpperCase().padStart(4,'0');
+    let v = cp - 0x10000;
+    const high = 0xD800 + (v >> 10);
+    const low = 0xDC00 + (v & 0x3FF);
+    return high.toString(16).toUpperCase().padStart(4,'0') + low.toString(16).toUpperCase().padStart(4,'0');
+  }
+  static createMetrics(parsed){
+    const { cmap, hmtx, unitsPerEm, fallbackGlyphId } = parsed;
+    return {
+      unitsPerEm,
+      textWidth: (text, size)=>{
+        let aw=0;
+        for (const ch of text){
+          const cp = ch.codePointAt(0);
+          const gid = cmap[cp] ?? fallbackGlyphId;
+          const adv = hmtx[gid] ?? hmtx[hmtx.length-1] ?? hmtx[0] ?? unitsPerEm;
+          aw += adv;
+        }
+        return aw * (size / unitsPerEm);
+      },
+      encodeText: (text)=>{
+        const bytes=[];
+        for (const ch of text){
+          const cp = ch.codePointAt(0);
+          const gid = cmap[cp] ?? fallbackGlyphId;
+          bytes.push((gid>>8)&0xFF, gid & 0xFF);
+        }
+        return Buffer.from(bytes).toString('hex').toUpperCase();
+      }
+    };
+  }
 }
-
 /* ---------- Canvas & Renderer ---------- */
 class Canvas {
   constructor(pdf, pageIndex){ this.pdf=pdf; this.p=pageIndex; const pg=pdf.pages[pageIndex]; this.W=pg.width; this.H=pg.height; this.state={font:'F1', metrics:null}; }
   setFont(fontTag, metrics){ this.state.font=fontTag; this.state.metrics=metrics; }
-  text({t,x,y,sz=12,c=null,font}){
+  text({t,x,y,sz=12,c=null,font,alpha=1,letterSpacing=0}){
     const tag = font||this.state.font;
-    if (tag==='F1') this.pdf.drawTextSimple(this.p, t, x, y, {size:sz, color:c, fontTag:tag});
-    else            this.pdf.drawTextU16  (this.p, t, x, y, {size:sz, color:c, fontTag:tag});
+    const metrics = this.pdf.fontMetrics?.[tag] || this.state.metrics;
+    const spacing = Number.isFinite(letterSpacing) ? letterSpacing : 0;
+    const useAlpha = alpha !== undefined && alpha < 1;
+    let gs=null;
+    if (useAlpha){
+      gs = this.pdf._ensureExtGState({ fillAlpha: alpha, strokeAlpha: alpha });
+      this.pdf.cmd(this.p,'q');
+      this.pdf.cmd(this.p,`/${gs.name} gs`);
+    }
+    if (t){
+      const glyphs = Array.from(t);
+      if (spacing && glyphs.length > 1){
+        let cursor = x;
+        glyphs.forEach((ch, idx) => {
+          this._drawGlyph(tag, metrics, ch, cursor, y, sz, c);
+          cursor += this._glyphAdvance(metrics, ch, sz);
+          if (idx < glyphs.length - 1) cursor += spacing;
+        });
+      } else {
+        this._drawGlyph(tag, metrics, t, x, y, sz, c);
+      }
+    }
+    if (useAlpha) this.pdf.cmd(this.p,'Q');
   }
-  textFit({t,x,y,w,h,min=8,max=72,c=null,font}){
-    const tag=font||this.state.font, m=this.state.metrics;
-    if (!m){ let sz=max, tw=t.length*sz*0.5; while(tw>w && sz>min){ sz-=0.5; tw=t.length*sz*0.5; } this.text({t,x:x+(w-tw)/2,y:y+(h-sz)/2,sz,c,font:tag}); return sz; }
+  textFit({t,x,y,w,h,min=8,max=72,c=null,font,alpha=1}){
+    const tag=font||this.state.font;
+    const m=this.pdf.fontMetrics?.[tag] || this.state.metrics;
+    if (!m || !m.textWidth){ let sz=max, tw=t.length*sz*0.5; while(tw>w && sz>min){ sz-=0.5; tw=t.length*sz*0.5; } this.text({t,x:x+(w-tw)/2,y:y+(h-sz)/2,sz,c,font:tag,alpha}); return sz; }
     let lo=min, hi=max, best=min;
     while(hi-lo>0.5){ const mid=(hi+lo)/2, tw=m.textWidth(t, mid); if (tw<=w){ best=mid; lo=mid; } else hi=mid; }
     const tw=m.textWidth(t,best); const base=y+(h-best)/2;
-    this.text({t, x:x+(w-tw)/2, y:base, sz:best, c, font:tag}); return best;
+    this.text({t, x:x+(w-tw)/2, y:base, sz:best, c, font:tag, alpha}); return best;
   }
-  rect({x,y,w,h,fill=null,stroke=null,sw=1}){ this.pdf.drawRect(this.p, x,y,w,h, {fillColor:fill, strokeColor:stroke, strokeWidth:sw}); }
+  rect({x,y,w,h,fill=null,stroke=null,sw=1,alpha=1,alphaStroke=1,radius=0}){
+    const hasFill = Array.isArray(fill);
+    const hasStroke = Array.isArray(stroke);
+    const useAlpha = (hasFill && alpha < 1) || (hasStroke && alphaStroke < 1);
+    let gs=null;
+    if (useAlpha){
+      gs = this.pdf._ensureExtGState({ fillAlpha: hasFill?alpha:1, strokeAlpha: hasStroke?alphaStroke:1 });
+      this.pdf.cmd(this.p,'q');
+      this.pdf.cmd(this.p,`/${gs.name} gs`);
+    }
+    if (radius){ this.pdf.drawRoundedRect(this.p, x,y,w,h,{fillColor:fill, strokeColor:stroke, strokeWidth:sw, radius}); }
+    else this.pdf.drawRect(this.p, x,y,w,h, {fillColor:fill, strokeColor:stroke, strokeWidth:sw});
+    if (useAlpha) this.pdf.cmd(this.p,'Q');
+  }
   frame({m=20, color=[3,50,72], sw=4}={}){ this.pdf.setStrokeColor(this.p,...color); this.pdf.setLineWidth(this.p,sw);
     const x0=m,y0=m,x1=this.W-m,y1=this.H-m; this.pdf.cmd(this.p,`${fnum(x0)} ${fnum(y0)} m`); this.pdf.cmd(this.p,`${fnum(x1)} ${fnum(y0)} l`);
     this.pdf.cmd(this.p,`${fnum(x1)} ${fnum(y1)} l`); this.pdf.cmd(this.p,`${fnum(x0)} ${fnum(y1)} l`); this.pdf.cmd(this.p,`${fnum(x0)} ${fnum(y0)} l`); this.pdf.cmd(this.p,'S'); }
@@ -375,6 +578,22 @@ class Canvas {
     }
     this.pdf.drawImageXObject(this.p, xName, x,y,w,h);
   }
+  _drawGlyph(tag, metrics, text, x, y, sz, color){
+    if (!text) return;
+    if (tag==='F1' || !metrics || !metrics.encodeText){
+      this.pdf.drawTextSimple(this.p, text, x, y, {size:sz, color, fontTag:tag});
+    } else {
+      const glyphHex = metrics.encodeText(text);
+      this.pdf.drawTextCID(this.p, glyphHex, x, y, {size:sz, color, fontTag:tag});
+    }
+  }
+  _glyphAdvance(metrics, text, sz){
+    if (!text) return 0;
+    if (metrics && typeof metrics.textWidth === 'function'){
+      return metrics.textWidth(text, sz);
+    }
+    return Array.from(text).length * sz * 0.5;
+  }
   static _uniqueName(pdf,p){ let i=1; for(;;){ const n=`Im${i}`; const res=pdf.objects.find(o=>o.id===pdf.pages[p].resourcesId); if(!String(res.data).includes(`/${n} `)) return n; i++; } }
 }
 
@@ -383,10 +602,43 @@ class Renderer {
   run(spec){ const unit=spec.unit||'pt'; if (Array.isArray(spec.items)) for(const it of spec.items) this._it(it, unit); }
   _it(it,unit){
     const T=it.type;
-    if (T==='rect'){ this.cv.rect({x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), fill:it.fill||null, stroke:it.stroke||null, sw:it.sw||1}); }
-    else if (T==='text'){ this.cv.text({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), sz:it.size||12, c:it.color||null, font:it.font}); }
-    else if (T==='textFit'){ this.cv.textFit({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), min:it.min||8, max:it.max||48, c:it.color||null, font:it.font}); }
-    else if (T==='image'){ this.cv.imagePNG({path:it.src, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit)}); }
+    if (T==='rect'){
+      this.cv.rect({
+        x:toPt(it.x,unit),
+        y:toPt(it.y,unit),
+        w:toPt(it.w,unit),
+        h:toPt(it.h,unit),
+        fill:it.fill||null,
+        stroke:it.stroke||null,
+        sw:it.sw||1,
+        alpha: it.alpha !== undefined ? it.alpha : 1,
+        alphaStroke: it.alphaStroke !== undefined ? it.alphaStroke : (it.alpha !== undefined ? it.alpha : 1),
+        radius: it.radius || 0
+      });
+    }
+    else if (T==='strokeRect'){
+      this.cv.rect({
+        x:toPt(it.x,unit),
+        y:toPt(it.y,unit),
+        w:toPt(it.w,unit),
+        h:toPt(it.h,unit),
+        fill:null,
+        stroke:it.stroke||[0,0,0],
+        sw:it.sw||1,
+        alpha:1,
+        alphaStroke: it.alpha !== undefined ? it.alpha : 1,
+        radius: it.radius || 0
+      });
+    }
+    else if (T==='text'){
+      this.cv.text({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), sz:it.size||12, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1, letterSpacing: it.letterSpacing || 0});
+    }
+    else if (T==='textFit'){
+      this.cv.textFit({t:it.t, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit), min:it.min||8, max:it.max||48, c:it.color||null, font:it.font, alpha: it.alpha !== undefined ? it.alpha : 1});
+    }
+    else if (T==='image'){
+      this.cv.imagePNG({path:it.src, x:toPt(it.x,unit), y:toPt(it.y,unit), w:toPt(it.w,unit), h:toPt(it.h,unit)});
+    }
     else if (T==='group' && Array.isArray(it.items)) for(const c of it.items) this._it(c,unit);
   }
 }
